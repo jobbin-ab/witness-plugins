@@ -51,15 +51,49 @@ opens what it names. `/witness` shows or hides it.
                                                              │   witness from main
 ```
 
+## What the plugin does on your machine and network
+
+**What it sends.** Its own calls go only to witness, through the MCP connection your
+session's witness tools use. It makes two calls there without the agent asking:
+
+- `witness_list_cards` with `covers`, the first time the agent edits a file in a session,
+  once the session has read a project. It sends the file's path relative to the
+  repository, with the project id and read proof the agent's own witness calls used.
+- `witness_agent_md`, once per project, when a card arrives before the session knows the
+  project's page (a resumed session, or one past a compaction). It sends the project id,
+  and keeps the page address for the rail's links.
+
+Nothing else leaves your machine: no file contents, no command output, nothing else from
+the conversation.
+
+**What it runs.** Two fixed commands in the session's folder, for the rail's pull request
+and branch: `git rev-parse --abbrev-ref HEAD` and
+`gh pr view --json number,title,url,state,isDraft,baseRefName`, which asks GitHub for the
+branch's pull request with your own `gh` login. They run at session start, after a Bash call holding `gh pr` or
+`git push`, and at `/witness`. Never polled, and never where nothing can show the rail
+(`claude -p`). No `gh`, no pull request section.
+
+**What it reads.** These tool calls, keeping what the rail and the questions need for the
+session:
+
+- witness tools: input and result, for the cards the session holds (id, title, status),
+  each project's read proof, and its page address. A write that puts a card Done with
+  `verifiedBy` waits for your answer.
+- Bash: the command's text, only to see whether it holds `gh pr` or `git push`.
+- Artifact: a publish's result, for its URL and title.
+- Edit, Write, MultiEdit and NotebookEdit: the file's path, for the covers check. A
+  covering card is added as a note to the edit's result, which waits at most two seconds
+for the answer.
+
+It changes no tool's input, and the only call it stops is a Done you did not confirm.
+`/witness` is the one command it answers: it opens or closes the rail, and opening reads
+the pull request and branch as above.
+
 ## Good to know
 
 - The rail opens by itself once, when the session takes its first card, in Claude Code's
   fullscreen layout. Elsewhere it waits for `/witness`, and the line under the prompt
   lists the cards meanwhile: `◕ GN-304 · ○ GN-433 · /witness`.
-- The pull request is read with `gh` in the session's folder: at start, after a `gh pr`
-  or `git push`, and at `/witness`. No `gh`, no section.
-- The covered-file check sends the file's path, relative to the repository, to witness as
-  a `covers` query. It never blocks the edit and never writes.
 - In `claude -p`, or anywhere nobody can be asked, a Done passes through to witness as it
   would without the plugin.
 - If you added witness with `claude mcp add` before, remove it (`claude mcp remove

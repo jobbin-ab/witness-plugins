@@ -1,4 +1,3 @@
-import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register, RenderInput, ToolCallResult } from 'claude-code'
 
 import type { WitnessArtifact, WitnessHeldCard, WitnessProof, WitnessRailHistory, WitnessTree } from '../types'
@@ -31,25 +30,140 @@ import {
  * the Mac app's rail, as a pane. It carries no sentence of the method: that is the
  * project document's, read through the MCP tools.
  *
- * Everything that touches `$` is in this file: the engine follows `$` into a function
- * declared here and never across an import, so the other files are plain logic.
+ * Everything that touches `$` is in this file, written so a reader of the source can
+ * follow it: every use is a literal `$.noun.method(...)`, every registration its own
+ * `on("event", ...)` line, and `$` is passed only whole, to a function declared at the
+ * top of this file; never into an import (the state library's `read` and `update`
+ * included), a nested function, a variable or a destructuring. The other files are
+ * plain logic.
  */
 
-const cards = atom({ plugin: 'witness', key: 'cards' } as const, [] as WitnessHeldCard[])
-const proofs = atom({ plugin: 'witness', key: 'proofs' } as const, {} as Record<string, WitnessProof>)
-const pages = atom({ plugin: 'witness', key: 'pages' } as const, {} as Record<string, string>)
-const asked = atom({ plugin: 'witness', key: 'asked' } as const, [] as string[])
-const artifacts = atom({ plugin: 'witness', key: 'artifacts' } as const, [] as WitnessArtifact[])
-const tree = atom({ plugin: 'witness', key: 'tree' } as const, {
-  branch: null,
-  repository: null,
-  pullRequest: null,
-} as WitnessTree)
-const rail = atom({ plugin: 'witness', key: 'rail' } as const, {
-  shown: false,
-  autoOpened: false,
-  closedByPerson: false,
-} as WitnessRailHistory)
+const cards = { plugin: 'witness', key: 'cards' } as const
+const proofs = { plugin: 'witness', key: 'proofs' } as const
+const pages = { plugin: 'witness', key: 'pages' } as const
+const asked = { plugin: 'witness', key: 'asked' } as const
+const artifacts = { plugin: 'witness', key: 'artifacts' } as const
+const tree = { plugin: 'witness', key: 'tree' } as const
+const rail = { plugin: 'witness', key: 'rail' } as const
+
+const NO_TREE: WitnessTree = { branch: null, repository: null, pullRequest: null }
+const NO_HISTORY: WitnessRailHistory = { shown: false, autoOpened: false, closedByPerson: false }
+
+/**
+ * How often a change is tried against a value another write keeps beating, as the state
+ * library's `update` bounds it. Each change below reads, applies, and writes with
+ * `ifVersion`, again on a miss, so two changes in flight both land.
+ */
+const TRIES = 64
+const BEATEN = 'witness: the value was written by another every time it was read; nothing was written'
+
+async function heldCards($: EngineInterface): Promise<WitnessHeldCard[]> {
+  return (await $.state.get(cards)).value ?? []
+}
+
+async function changeCards($: EngineInterface, change: (list: WitnessHeldCard[]) => WitnessHeldCard[]): Promise<WitnessHeldCard[]> {
+  for (let i = 0; i < TRIES; i += 1) {
+    const held = await $.state.get(cards)
+    const value = change(held.value ?? [])
+    if ((await $.state.set(cards, value, { ifVersion: held.version })).isSet) return value
+  }
+  throw new Error(BEATEN)
+}
+
+async function heldProofs($: EngineInterface): Promise<Record<string, WitnessProof>> {
+  return (await $.state.get(proofs)).value ?? {}
+}
+
+async function changeProofs(
+  $: EngineInterface,
+  change: (all: Record<string, WitnessProof>) => Record<string, WitnessProof>,
+): Promise<void> {
+  for (let i = 0; i < TRIES; i += 1) {
+    const held = await $.state.get(proofs)
+    if ((await $.state.set(proofs, change(held.value ?? {}), { ifVersion: held.version })).isSet) return
+  }
+  throw new Error(BEATEN)
+}
+
+async function heldPages($: EngineInterface): Promise<Record<string, string>> {
+  return (await $.state.get(pages)).value ?? {}
+}
+
+async function changePages($: EngineInterface, change: (all: Record<string, string>) => Record<string, string>): Promise<void> {
+  for (let i = 0; i < TRIES; i += 1) {
+    const held = await $.state.get(pages)
+    if ((await $.state.set(pages, change(held.value ?? {}), { ifVersion: held.version })).isSet) return
+  }
+  throw new Error(BEATEN)
+}
+
+async function changeAsked($: EngineInterface, change: (list: string[]) => string[]): Promise<void> {
+  for (let i = 0; i < TRIES; i += 1) {
+    const held = await $.state.get(asked)
+    if ((await $.state.set(asked, change(held.value ?? []), { ifVersion: held.version })).isSet) return
+  }
+  throw new Error(BEATEN)
+}
+
+async function heldArtifacts($: EngineInterface): Promise<WitnessArtifact[]> {
+  return (await $.state.get(artifacts)).value ?? []
+}
+
+async function changeArtifacts($: EngineInterface, change: (list: WitnessArtifact[]) => WitnessArtifact[]): Promise<void> {
+  for (let i = 0; i < TRIES; i += 1) {
+    const held = await $.state.get(artifacts)
+    if ((await $.state.set(artifacts, change(held.value ?? []), { ifVersion: held.version })).isSet) return
+  }
+  throw new Error(BEATEN)
+}
+
+async function heldTree($: EngineInterface): Promise<WitnessTree> {
+  return (await $.state.get(tree)).value ?? NO_TREE
+}
+
+async function keepTree($: EngineInterface, value: WitnessTree): Promise<void> {
+  await $.state.set(tree, value)
+}
+
+async function railHistory($: EngineInterface): Promise<WitnessRailHistory> {
+  return (await $.state.get(rail)).value ?? NO_HISTORY
+}
+
+async function changeRail($: EngineInterface, change: (h: WitnessRailHistory) => WitnessRailHistory): Promise<void> {
+  for (let i = 0; i < TRIES; i += 1) {
+    const held = await $.state.get(rail)
+    if ((await $.state.set(rail, change(held.value ?? NO_HISTORY), { ifVersion: held.version })).isSet) return
+  }
+  throw new Error(BEATEN)
+}
+
+/** Where the session draws; none on error. */
+async function surfaces($: EngineInterface): Promise<readonly string[]> {
+  try {
+    return await $.session.surfaces()
+  } catch {
+    return []
+  }
+}
+
+/** Whether the rail is open; `placed` asks that it is also seated. */
+async function railOpen($: EngineInterface, placed: boolean): Promise<boolean> {
+  try {
+    return (await $.ui.panes()).some((p) => p.id === RAIL && (!placed || p.isPlaced))
+  } catch {
+    return false
+  }
+}
+
+/** Resolves undefined after `ms`, or at once when `signal` aborts: the bound a lookup races. */
+async function waitFor($: EngineInterface, ms: number, signal: AbortSignal): Promise<undefined> {
+  try {
+    await $.clock.sleep(ms, { signal })
+  } catch {
+    // Aborted: the lookup answered first.
+  }
+  return undefined
+}
 
 /**
  * Whether the terminal draws the fullscreen layout, learnt from its own hint line (the
@@ -73,12 +187,12 @@ let placement: 'dock' | 'inline' | undefined
  * under Other, has not said yes.
  */
 async function askDone($: EngineInterface, call: WitnessCall, items: DoneItem[]): Promise<string | undefined> {
-  const surfaces = await $.session.surfaces().catch(() => [])
+  const where = await surfaces($)
   let answer: string
   try {
     answer = await $.ui.ask(question(call, items), { options: [WATCHED, NOT_YET], header: HEADER })
   } catch {
-    return surfaces.length === 0 ? undefined : refusal(call, items, false)
+    return where.length === 0 ? undefined : refusal(call, items, false)
   }
   if (answer === WATCHED) return undefined
   return refusal(call, items, answer === NOT_YET)
@@ -89,15 +203,15 @@ async function recordCall($: EngineInterface, call: WitnessCall, answer: Record<
   const projectId = typeof call.input.projectId === 'string' ? call.input.projectId : ''
   const readProof = call.input.readProof
   if (projectId && typeof readProof === 'string') {
-    await update($, proofs, (all) => ({ ...all, [projectId]: { server: call.server, readProof } }))
+    await changeProofs($, (all) => ({ ...all, [projectId]: { server: call.server, readProof } }))
   }
   const path = askedCovers(call)
-  if (path) await update($, asked, (list) => (list.includes(path) ? list : [...list, path]))
+  if (path) await changeAsked($, (list) => (list.includes(path) ? list : [...list, path]))
   connected = true
   const change = cardsChange(call, answer)
   if (!change) return
-  const before = (await read($, cards)).length
-  const after = (await update($, cards, change)).length
+  const before = (await heldCards($)).length
+  const after = (await changeCards($, change)).length
   if (before === 0 && after > 0) await autoOpen($)
   else await growInline($)
   if (projectId && after > 0) await learnPage($, call.server, projectId)
@@ -106,7 +220,7 @@ async function recordCall($: EngineInterface, call: WitnessCall, answer: Record<
 /** Keeps a project's page address under its server. The rail reads it while drawing, so a card already held gains its link when it lands. */
 async function keepPage($: EngineInterface, server: string, projectId: string, page: string): Promise<void> {
   const key = pageKey(server, projectId)
-  await update($, pages, (all) => (all[key] === page ? all : { ...all, [key]: page }))
+  await changePages($, (all) => (all[key] === page ? all : { ...all, [key]: page }))
 }
 
 /** The page address the model's own `agent_md` call was answered with, in whatever shape the engine hands it on. */
@@ -123,6 +237,15 @@ const PAGE_WAIT_MS = 2000
 /** Server and project pairs whose page the mod has asked for itself: once each per session. */
 const pagesAsked = new Set<string>()
 
+/** The page `agent_md` names for one project on one server; undefined on any failure. */
+async function askPage($: EngineInterface, server: string, projectId: string): Promise<string | undefined> {
+  try {
+    return pageLink(await $.mcp.call(server, 'witness_agent_md', { projectId }), projectId)
+  } catch {
+    return undefined
+  }
+}
+
 /**
  * A session that writes with a proof but never called `agent_md` itself (one resumed, or
  * past a compaction) has no page for the project: once per server and project, the mod
@@ -133,47 +256,43 @@ const pagesAsked = new Set<string>()
  */
 async function learnPage($: EngineInterface, server: string, projectId: string): Promise<void> {
   const key = pageKey(server, projectId)
-  if (pagesAsked.has(key) || (await read($, pages))[key]) return
-  const proof = (await read($, proofs))[projectId]
+  if (pagesAsked.has(key) || (await heldPages($))[key]) return
+  const proof = (await heldProofs($))[projectId]
   if (!proof || proof.server !== server) return
   pagesAsked.add(key)
   const stop = new AbortController()
-  const timeout = $.clock.sleep(PAGE_WAIT_MS, { signal: stop.signal }).then(
-    () => undefined,
-    () => undefined,
-  )
-  const lookup = $.mcp
-    .call(server, 'witness_agent_md', { projectId })
-    .then((answer) => pageLink(answer, projectId))
-    .catch(() => undefined)
-  const page = await Promise.race([lookup, timeout])
+  const page = await Promise.race([askPage($, server, projectId), waitFor($, PAGE_WAIT_MS, stop.signal)])
   stop.abort()
   if (page) await keepPage($, server, projectId, page)
 }
 
 async function isConnected($: EngineInterface): Promise<boolean> {
   if (connected) return true
-  const tools = await $.tool.list().catch(() => [])
-  connected = tools.some((t) => WITNESS_TOOL.test(t.name))
+  try {
+    connected = (await $.tool.list()).some((t) => WITNESS_TOOL.test(t.name))
+  } catch {
+    connected = false
+  }
   return connected
 }
 
 /** What the rail draws from; read while drawing, so a later write draws it again. */
 async function railFacts($: EngineInterface): Promise<RailFacts> {
-  const held = await read($, cards)
+  const held = await heldCards($)
   return {
     cards: held,
-    artifacts: await read($, artifacts),
-    tree: await read($, tree),
-    pages: await read($, pages),
+    artifacts: await heldArtifacts($),
+    tree: await heldTree($),
+    pages: await heldPages($),
     isConnected: held.length > 0 || (await isConnected($)),
   }
 }
 
 /** Opens the rail: docked 44 columns wide, inline as tall as its lines with the folds that fit fourteen. */
 async function openRail($: EngineInterface): Promise<void> {
-  const opened = await $.ui.open({ id: RAIL, title: RAIL, columns: RAIL_COLUMNS, rows: inlineRows(await railFacts($)) })
-  if (opened.isPlaced) await update($, rail, (h) => ({ ...h, shown: true }))
+  const rows = inlineRows(await railFacts($))
+  const opened = await $.ui.open({ id: RAIL, title: RAIL, columns: RAIL_COLUMNS, rows })
+  if (opened.isPlaced) await changeRail($, (h) => ({ ...h, shown: true }))
   // The hint tail reads whether the rail is placed, which no state write announces.
   $.ui.invalidate('ui.render')
 }
@@ -185,12 +304,12 @@ async function openRail($: EngineInterface): Promise<void> {
  * gets the hint tail instead.
  */
 async function autoOpen($: EngineInterface): Promise<void> {
-  const history = await read($, rail)
+  const history = await railHistory($)
   if (history.autoOpened || history.closedByPerson) return
-  const surfaces: readonly string[] = await $.session.surfaces().catch(() => [])
-  if (surfaces.length === 0) return
-  if (!(surfaces.some((s) => s === 'desktop' || s === 'vscode') || fullscreen === true)) return
-  await update($, rail, (h) => ({ ...h, autoOpened: true }))
+  const where = await surfaces($)
+  if (where.length === 0) return
+  if (!(where.some((s) => s === 'desktop' || s === 'vscode') || fullscreen === true)) return
+  await changeRail($, (h) => ({ ...h, autoOpened: true }))
   await openRail($)
 }
 
@@ -200,42 +319,89 @@ async function autoOpen($: EngineInterface): Promise<void> {
  */
 async function growInline($: EngineInterface): Promise<void> {
   if (placement !== 'inline') return
-  if (!(await $.ui.panes().catch(() => [])).some((p) => p.id === RAIL)) return
-  await $.ui.open({ id: RAIL, title: RAIL, columns: RAIL_COLUMNS, rows: inlineRows(await railFacts($)) })
+  if (!(await railOpen($, false))) return
+  const rows = inlineRows(await railFacts($))
+  await $.ui.open({ id: RAIL, title: RAIL, columns: RAIL_COLUMNS, rows })
+}
+
+/** The session's repository root, or null. */
+async function repoRoot($: EngineInterface): Promise<string | null> {
+  try {
+    return (await $.session.repo())?.root ?? null
+  } catch {
+    return null
+  }
+}
+
+/** The session's own folder, or undefined. */
+async function sessionRoot($: EngineInterface): Promise<string | undefined> {
+  try {
+    return await $.session.root()
+  } catch {
+    return undefined
+  }
+}
+
+/** The branch `git rev-parse --abbrev-ref HEAD` names; null for a detached head, no git, or an error. */
+async function readBranch($: EngineInterface): Promise<string | null> {
+  try {
+    const ran = await $.process.run(['git', 'rev-parse', '--abbrev-ref', 'HEAD'], { timeoutMs: 10_000 })
+    const out = ran.stdout.trim()
+    // A detached head reads `HEAD`: no branch.
+    return ran.exitCode === 0 && out && out !== 'HEAD' ? out : null
+  } catch {
+    return null
+  }
+}
+
+/** The branch's pull request as `gh pr view` prints it; null for none, no gh, or an error. */
+async function readPullRequest($: EngineInterface): Promise<WitnessTree['pullRequest']> {
+  try {
+    const ran = await $.process.run(['gh', 'pr', 'view', '--json', 'number,title,url,state,isDraft,baseRefName'], {
+      timeoutMs: 15_000,
+    })
+    return ran.exitCode === 0 ? parsePullRequest(ran.stdout) : null
+  } catch {
+    return null
+  }
 }
 
 /**
  * The working tree, read at session start, after a Bash call that may have moved the
  * pull request, and at each `/witness`; never polled. No git, no `gh`, no pull request,
- * or an error: that part is absent.
+ * or an error: that part is absent. Never throws.
  */
 async function refreshTree($: EngineInterface): Promise<void> {
-  // No surface (\`-p\`, an SDK host, a Mac app session): nothing draws the rail, so no gh, no git.
-  if ((await $.session.surfaces().catch(() => [])).length === 0) return
-  const repo = await $.session.repo().catch(() => null)
-  let branch: string | null = null
   try {
-    const ran = await $.process.run(['git', 'rev-parse', '--abbrev-ref', 'HEAD'], { timeoutMs: 10_000 })
-    // A detached head reads `HEAD`: no branch.
-    if (ran.exitCode === 0 && ran.stdout.trim() && ran.stdout.trim() !== 'HEAD') branch = ran.stdout.trim()
+    // No surface (\`-p\`, an SDK host, a Mac app session): nothing draws the rail, so no gh, no git.
+    if ((await surfaces($)).length === 0) return
+    const root = await repoRoot($)
+    const branch = await readBranch($)
+    const pullRequest = await readPullRequest($)
+    const repository = root ? (root.replace(/[\\/]+$/, '').split(/[\\/]/).pop() ?? null) : null
+    await keepTree($, { branch, repository, pullRequest })
   } catch {
-    // No git: no branch.
+    // The rail keeps what it had.
   }
-  let pullRequest = null
-  try {
-    const ran = await $.process.run(['gh', 'pr', 'view', '--json', 'number,title,url,state,isDraft,baseRefName'], {
-      timeoutMs: 15_000,
-    })
-    if (ran.exitCode === 0) pullRequest = parsePullRequest(ran.stdout)
-  } catch {
-    // No gh: no pull request.
-  }
-  const repository = repo ? (repo.root.replace(/[\\/]+$/, '').split(/[\\/]/).pop() ?? null) : null
-  await update($, tree, () => ({ branch, repository, pullRequest }))
 }
 
 /** How long the edit's result waits on a `covers` answer before it goes without a note. */
 const COVERS_WAIT_MS = 2000
+
+/** The cards one project says cover `path`; none when not connected or the server failed. */
+async function askCovers($: EngineInterface, projectId: string, proof: WitnessProof, path: string): Promise<string[]> {
+  try {
+    const answer = await $.mcp.call(proof.server, 'witness_list_cards', {
+      projectId,
+      readProof: proof.readProof,
+      covers: path,
+    })
+    return coveringCards(answer)
+  } catch {
+    // Not connected, or the server failed: silent, the edit runs.
+    return []
+  }
+}
 
 /**
  * The note for one file, or undefined: once per path per session, on each project the
@@ -243,46 +409,31 @@ const COVERS_WAIT_MS = 2000
  * Nothing covers it, no answer within two seconds, or anything fails: undefined.
  */
 async function coversNote($: EngineInterface, filePath: string): Promise<string | undefined> {
-  const known = await read($, proofs)
+  const known = await heldProofs($)
   const projects = Object.keys(known)
   if (projects.length === 0) return undefined
 
-  const repo = await $.session.repo().catch(() => null)
-  const root = await $.session.root().catch(() => undefined)
-  const path = relativeTo(filePath, [...(repo ? [repo.root] : []), ...(root ? [root] : [])])
+  const repo = await repoRoot($)
+  const root = await sessionRoot($)
+  const path = relativeTo(filePath, [...(repo ? [repo] : []), ...(root ? [root] : [])])
   if (!path) return undefined
 
   let first = false
-  await update($, asked, (list) => {
+  await changeAsked($, (list) => {
     first = !list.includes(path)
     return first ? [...list, path] : list
   })
   if (!first) return undefined
 
+  const lookups: Promise<string[]>[] = []
+  for (const projectId of projects) lookups.push(askCovers($, projectId, known[projectId]!, path))
   const stop = new AbortController()
-  const timeout = $.clock.sleep(COVERS_WAIT_MS, { signal: stop.signal }).then(
-    () => [] as string[],
-    () => [] as string[],
-  )
-  const lookup = Promise.all(
-    projects.map(async (projectId) => {
-      const proof = known[projectId]!
-      try {
-        const answer = await $.mcp.call(proof.server, 'witness_list_cards', {
-          projectId,
-          readProof: proof.readProof,
-          covers: path,
-        })
-        return coveringCards(answer)
-      } catch {
-        // Not connected, or the server failed: silent, the edit runs.
-        return []
-      }
-    }),
-  ).then((each) => each.flat())
-  const found = await Promise.race([lookup, timeout])
+  const found = await Promise.race([
+    Promise.all(lookups).then((each) => each.flat()),
+    waitFor($, COVERS_WAIT_MS, stop.signal),
+  ])
   stop.abort()
-  return note(found, path)
+  return note(found ?? [], path)
 }
 
 /**
@@ -291,8 +442,9 @@ async function coversNote($: EngineInterface, filePath: string): Promise<string 
  * phone, and the page's own SVG on desktop and VS Code.
  */
 function drawRail($: EngineInterface, e: RenderInput<'Pane'>, rows: readonly RailRow[]) {
-  const { Box, Text, Link } = $.ui.resolve(e)
-  const Svg = e.surface === 'desktop' || e.surface === 'vscode' ? $.ui.resolve(e).Svg : undefined
+  const elements = $.ui.resolve(e)
+  const { Box, Text, Link } = elements
+  const Svg = (e.surface === 'desktop' || e.surface === 'vscode') && 'Svg' in elements ? elements.Svg : undefined
   // Docked, the mod draws the frame's gutter: one cell on the left, one under the close
   // mark, so a header never touches the divider and the \`…\` sits under the \`✕\`.
   const docked = e.props.placement === 'dock'
@@ -310,7 +462,7 @@ function drawRail($: EngineInterface, e: RenderInput<'Pane'>, rows: readonly Rai
       case 'more':
         return (
           <Box paddingLeft={2}>
-            <Text dimColor>{`${row.count} more`}</Text>
+            <Text dimColor>{row.count + ' more'}</Text>
           </Box>
         )
       case 'about':
@@ -334,13 +486,13 @@ function drawRail($: EngineInterface, e: RenderInput<'Pane'>, rows: readonly Rai
           <Text>
             <Link href={row.href}>
               <Text dimColor>{card.id}</Text>
-              {title ? ` ${title}` : ''}
+              {title ? ' ' + title : ''}
             </Link>
           </Text>
         ) : (
           <Text>
             <Text dimColor>{card.id}</Text>
-            {title ? ` ${title}` : ''}
+            {title ? ' ' + title : ''}
           </Text>
         )
         const colour = glyphColour(card.status)
@@ -376,29 +528,28 @@ export const register: Register = (on) => {
       immediate: true,
     })
     const started = await next(e)
-    void refreshTree($).catch(() => {})
+    void refreshTree($)
     return started
   })
 
   /** `/witness` opens the rail at any width, docked or inline as the screen allows, and closes it when open. */
   on('command.run', { command: 'witness' }, async ($, e) => {
     fullscreen = e.presentation.isFullscreen
-    const open = (await $.ui.panes().catch(() => [])).some((p) => p.id === RAIL)
-    if (open) {
+    if (await railOpen($, false)) {
       await $.ui.close({ id: RAIL })
       return {}
     }
     // Open from what is held, at once; the tree is read after, and the rail redraws when
     // it lands. gh can take many seconds, and a command waits on nothing it does not need.
     await openRail($)
-    void refreshTree($).catch(() => {})
+    void refreshTree($)
     return {}
   })
 
   /** A rail the person closed stays closed: nothing reopens it unasked. */
-  on('ui.close', { id: RAIL }, async ($, e, next) => {
+  on('ui.close', { id: 'witness' }, async ($, e, next) => {
     const closed = await next(e)
-    if (e.origin.kind === 'person') await update($, rail, (h) => ({ ...h, closedByPerson: true }))
+    if (e.origin.kind === 'person') await changeRail($, (h) => ({ ...h, closedByPerson: true }))
     $.ui.invalidate('ui.render')
     return closed
   })
@@ -417,11 +568,10 @@ export const register: Register = (on) => {
   on('ui.render', { component: 'PromptHint' }, async ($, e, next) => {
     if (e.surface !== 'terminal') return next(e)
     if (e.viewport?.isFullscreen !== undefined) fullscreen = e.viewport.isFullscreen
-    const held = await read($, cards)
+    const held = await heldCards($)
     if (held.length === 0) return next(e)
-    const placed = (await $.ui.panes().catch(() => [])).some((p) => p.id === RAIL && p.isPlaced)
-    if (placed) return next(e)
-    const tail = hintTail(held, (await read($, rail)).shown, e.props.hint, e.viewport?.columns)
+    if (await railOpen($, true)) return next(e)
+    const tail = hintTail(held, (await railHistory($)).shown, e.props.hint, e.viewport?.columns)
     return tail ? next({ ...e, props: { ...e.props, tail } }) : next(e)
   })
 
@@ -445,7 +595,7 @@ export const register: Register = (on) => {
   /** A Bash call that may have opened, pushed or changed the pull request reads the tree again. */
   on('tool.call', { tool: 'Bash' }, async ($, e, next) => {
     const ran = await next(e)
-    if (touchesPullRequest(e.command)) void refreshTree($).catch(() => {})
+    if (touchesPullRequest(e.command)) void refreshTree($)
     return ran
   })
 
@@ -456,7 +606,7 @@ export const register: Register = (on) => {
     const result = isRecord(ran.result) ? ran.result : parse(ran.text)
     const published = publishedArtifact(e as Record<string, unknown>, result)
     if (published) {
-      await update($, artifacts, (list) => withArtifact(list, published)).catch(() => {})
+      await changeArtifacts($, (list) => withArtifact(list, published)).catch(() => {})
       await growInline($).catch(() => {})
     }
     return ran
