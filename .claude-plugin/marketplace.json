@@ -1,6 +1,6 @@
 {
   "name": "witness",
-  "owner": { "name": "Robin Smedberg" },
+  "owner": { "name": "Jobbin AB" },
   "metadata": { "description": "Claude Code plugins for witness, the shared project of findings." },
   "plugins": [
     {

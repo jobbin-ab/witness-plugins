@@ -10,7 +10,7 @@ export type WitnessHeldCard = {
   projectId: string
   status: string
   title: string
-  /** The MCP server the answer came through, as tool names spell it: it decides the link's origin. */
+  /** The MCP server the answer came through, as tool names spell it: its page is the one the link takes. */
   server: string
 }
 
@@ -60,6 +60,11 @@ declare module 'claude-code' {
       cards: WitnessHeldCard[]
       /** Per project id, the proof and server of the session's last call that landed there. */
       proofs: Record<string, WitnessProof>
+      /**
+       * Per server and project id (`pageKey`), the project's page address, from the
+       * `resource_link` named `page` that `agent_md` answers with: what a card row links to.
+       */
+      pages: Record<string, string>
       /** Repository-relative paths already asked about by `covers`, by the mod or by the agent. */
       asked: string[]
       /** The artifacts this session published, oldest first. */

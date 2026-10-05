@@ -13,18 +13,18 @@ export const NOT_CONNECTED = 'witness is not connected. Sign in with /mcp.'
 /** Two rows, said only when the rail has nothing else to draw. */
 export const NO_CARD = ['No card yet.', "The agent's first card appears here."] as const
 
-/**
- * The page address for a server's cards. The plugin's own server is witness.nu; for a
- * server of another name (`witness-dev`, a second account) the mod has no address, and
- * the row is drawn without a link.
- */
-const ORIGINS: Readonly<Record<string, string>> = { plugin_witness_witness: 'https://witness.nu' }
+/** Where a project's page is kept: by server and project id, so two servers that hold the same id never cross-link. */
+export function pageKey(server: string, projectId: string): string {
+  return `${server}\u0000${projectId}`
+}
 
-/** `<origin>/r/<projectId>#/cards/<id>` (`ui/src/router.ts`), or undefined with no known origin. */
-export function cardUrl(card: Pick<WitnessHeldCard, 'server' | 'projectId' | 'id'>): string | undefined {
-  const origin = ORIGINS[card.server]
-  if (!origin || !card.projectId) return undefined
-  return `${origin}/r/${encodeURIComponent(card.projectId)}#/cards/${encodeURIComponent(card.id)}`
+/** `<page>#/cards/<id>` (`ui/src/router.ts`), with the page `agent_md` named for the card's server and project; undefined before it has. */
+export function cardUrl(
+  card: Pick<WitnessHeldCard, 'server' | 'projectId' | 'id'>,
+  pages: Readonly<Record<string, string>>,
+): string | undefined {
+  const page = pages[pageKey(card.server, card.projectId)]
+  return page ? `${page}#/cards/${encodeURIComponent(card.id)}` : undefined
 }
 
 /**
@@ -93,6 +93,8 @@ export type RailFacts = {
   cards: readonly WitnessHeldCard[]
   artifacts: readonly WitnessArtifact[]
   tree: WitnessTree
+  /** Per `pageKey`, the project's page address, as `agent_md` named it: the card rows' links. */
+  pages: Readonly<Record<string, string>>
   /** Whether a witness server is connected: only the empty state reads it. */
   isConnected: boolean
 }
@@ -124,7 +126,7 @@ export function railRows(facts: RailFacts, fold: Fold = {}): RailRow[] {
     sections.push([
       { kind: 'header', text: facts.cards.length === 1 ? 'CARD' : 'CARDS' },
       ...folded(facts.cards, fold.cards, (card): RailRow => {
-        const href = cardUrl(card)
+        const href = cardUrl(card, facts.pages)
         return href ? { kind: 'card', card, href } : { kind: 'card', card }
       }),
     ])

@@ -3,7 +3,7 @@ import type { On } from 'claude-code'
 
 import { NOT_YET, WATCHED } from '../hooks/done'
 import { glyphCell, glyphColour } from '../hooks/glyphs'
-import { cardUrl, cells, cut, fitRows, hintTail, inlineRows, parsePullRequest, touchesPullRequest } from '../hooks/rail'
+import { cardUrl, cells, pageKey, cut, fitRows, hintTail, inlineRows, parsePullRequest, touchesPullRequest } from '../hooks/rail'
 
 const PROJECT = 'p-test'
 const PROOF = 'proof-1'
@@ -14,6 +14,8 @@ type Seen = {
   sent: Record<string, unknown>[]
   status: (string | undefined)[]
   covers: string[]
+  /** The mod's own `agent_md` calls, as `server projectId`. */
+  pageCalls: string[]
   opens: { id: string; title?: string; columns?: number; rows?: number }[]
   closes: string[]
   panes: { id: string; isPlaced: boolean }[]
@@ -35,7 +37,13 @@ const GH_PR = JSON.stringify({
  * person does with the question: a label, free text, `dismiss`, or `nobody` (no
  * surface; the dialog rejects). `covering` is what the server answers for a `covers`
  * read, after `coversDelayMs` on the mocked clock or never when `coversFail`; `server`
- * is what it answers for every other call, by operation. `surface` is where the session
+ * is what it answers for every other call, by operation, as the engine hands a hook an
+ * MCP answer: the compact JSON string. `agent_md` answers the document and the page link
+ * the engine flattens a `resource_link` named `page` into, `[Resource link: page] <uri>`,
+ * to `page` (by tool name; by default the project's own address on witness.nu; null for
+ * none); `rawBlocks` passes the real block through instead, as some hosts do. The mod's
+ * own `agent_md` (`$.mcp.call`) gets the raw MCP result, a real `resource_link`, or fails
+ * when `pageFail`. `surface` is where the session
  * draws, `placed` whether an open pane is seated, `connected` whether witness tools are
  * listed, `pr` what `gh pr view` prints (absent: no pull request).
  */
@@ -47,6 +55,9 @@ function stand(
     coversFail?: boolean
     coversDelayMs?: number
     server?: (args: Record<string, unknown>, op: string) => unknown
+    page?: string | null | ((tool: string) => string | null)
+    rawBlocks?: boolean
+    pageFail?: boolean
     surface?: 'terminal' | 'desktop'
     placed?: boolean
     connected?: boolean
@@ -57,7 +68,7 @@ function stand(
   } = {},
 ): Seen {
   const clock = mock.clock(on)
-  const seen: Seen = { asked: [], sent: [], status: [], covers: [], opens: [], closes: [], panes: [], runs: [], clock }
+  const seen: Seen = { asked: [], sent: [], status: [], covers: [], pageCalls: [], opens: [], closes: [], panes: [], runs: [], clock }
   const answer = options.answer ?? WATCHED
 
   on('session.surfaces', () => ({ value: answer === 'nobody' ? [] : [options.surface ?? 'terminal'] }))
@@ -100,7 +111,18 @@ function stand(
     if (answer === 'dismiss' || answer === 'nobody') return { deny: 'The user dismissed the question.' }
     return { result: { questions: e.questions, answers: { [q.question]: answer } } }
   })
+  const pageOf = (tool: string, projectId: unknown): string | null => {
+    const page = typeof options.page === 'function' ? options.page(tool) : options.page
+    return page === undefined ? `https://witness.nu/r/${String(projectId)}` : page
+  }
   on('mcp.call', async ($, e) => {
+    if (e.tool === 'witness_agent_md') {
+      seen.pageCalls.push(`${e.server} ${String(e.args.projectId)}`)
+      if (options.pageFail) throw new Error('connection refused')
+      const page = pageOf(`mcp__${e.server}__witness_agent_md`, e.args.projectId)
+      const link = page === null ? [] : [{ type: 'resource_link', uri: page, name: 'page', title: 'Shop', mimeType: 'text/html' }]
+      return { value: { content: [{ type: 'text', text: '# Shop' }, ...link], isError: false } }
+    }
     seen.covers.push(String(e.args.covers))
     if (options.coversFail) throw new Error('connection refused')
     if (options.coversDelayMs) await clock.sleep(options.coversDelayMs)
@@ -111,11 +133,21 @@ function stand(
     const { tool, tool_use_id: _id, agentId: _a, ...args } = e as Record<string, unknown>
     seen.sent.push(args)
     const op = String(tool).replace(/^.*__witness_/, '')
+    if (op === 'agent_md') {
+      const page = pageOf(String(tool), args.projectId)
+      const doc = { type: 'text', text: '# Shop\n\nRead proof for every call on this project: `proof-1`' }
+      if (options.rawBlocks) {
+        const link = page === null ? [] : [{ type: 'resource_link', uri: page, name: 'page', title: 'Shop', mimeType: 'text/html' }]
+        return { result: { content: [doc, ...link] } }
+      }
+      const link = page === null ? [] : [{ type: 'text', text: `[Resource link: page] ${page}` }]
+      return { result: [doc, ...link] }
+    }
     const body = options.server
       ? options.server(args, op)
       : { card: { id: args.id ?? 'GN-1', status: args.status ?? 'ready', title: `Title of ${String(args.id ?? 'GN-1')}` } }
     if (body === 'refuse') return { deny: 'Ready asserts the requirement is settled.' }
-    return { result: { content: [{ type: 'text', text: JSON.stringify(body) }] } }
+    return { result: JSON.stringify(body) }
   })
   on('tool.call', { tool: /^(Edit|Write)$/ }, () => ({ result: { filePath: 'x' } }))
   on('tool.call', { tool: 'Bash' }, () => ({ result: { stdout: '', stderr: '', interrupted: false } as never }))
@@ -281,6 +313,7 @@ describe('the session rail', () => {
           ? { card: { id: args.id, status: args.id === 'GN-304' ? 'verify' : 'investigating', title: args.id === 'GN-304' ? 'Sessions: a pasted screenshot is kept once in the transcript' : 'Sessions: how long an archived session is kept' } }
           : {},
     })
+    await $.tool.call({ tool: own('agent_md'), projectId: PROJECT })
     await $.tool.call({ tool: own('claim_card'), ...call, id: 'GN-304', note: 'x' })
     await $.tool.call({ tool: own('claim_card'), ...call, id: 'GN-433', note: 'y' })
     await $.tool.call({ tool: 'Artifact', file_path: 'before-after.html', title: 'GN-431 before and after' })
@@ -321,17 +354,95 @@ describe('the session rail', () => {
     }
   })
 
-  test('a card from another server name draws without a link; ABOUT names no base without a pull request', async ($, on) => {
-    const seen = stand(on)
-    await $.tool.call({ tool: 'mcp__witness-dev__witness_claim_card', ...call, id: 'GN-7', note: 'x' })
+  test('a card links to the page agent_md named, under any server name; ABOUT names no base without a pull request', async ($, on) => {
+    const seen = stand(on, { page: 'https://dev.example/r/p-dev' })
+    await $.tool.call({ tool: 'mcp__witness-dev__witness_agent_md', projectId: 'p-dev' })
+    await $.tool.call({ tool: 'mcp__witness-dev__witness_claim_card', ...call, projectId: 'p-dev', id: 'GN-7', note: 'x' })
     await $.command.run(WITNESS())
     await seen.clock.settle()
     const ui = await $.ui.mount({ plugin: 'witness', surface: 'terminal', component: 'Pane', requestId: 'witness', props: PANE() })
     const texts = (await ui.findAll({ type: 'Text' })).map((t) => t.text)
-    expect(await ui.findAll({ type: 'Link' })).toEqual([])
+    expect((await ui.findAll({ type: 'Link' })).map((l) => l.props.href)).toEqual(['https://dev.example/r/p-dev#/cards/GN-7'])
     expect(texts.filter((t) => /^[A-Z][A-Z ]+$/.test(t))).toEqual(['CARD', 'ABOUT'])
     expectShown(texts, 'shop')
     expect(texts.some((t) => t.includes(' from '))).toBe(false)
+  })
+
+  test('a page link that is not the project asked about is ignored', async ($, on) => {
+    const seen = stand(on, { page: 'https://dev.example/r/someone-else' })
+    await $.tool.call({ tool: 'mcp__witness-dev__witness_agent_md', projectId: 'p-dev' })
+    await $.tool.call({ tool: 'mcp__witness-dev__witness_claim_card', ...call, projectId: 'p-dev', id: 'GN-7', note: 'x' })
+    await $.command.run(WITNESS())
+    await seen.clock.settle()
+    const ui = await $.ui.mount({ plugin: 'witness', surface: 'terminal', component: 'Pane', requestId: 'witness', props: PANE() })
+    expectShown((await ui.findAll({ type: 'Text' })).map((t) => t.text), 'GN-7 Title of GN-7')
+    expect(await ui.findAll({ type: 'Link' })).toEqual([])
+  })
+
+  test('a card claimed before agent_md draws unlinked, and gains its link when the page is learnt', async ($, on) => {
+    const seen = stand(on, { noRepo: true })
+    // No proof on the claim: the mod has nothing to ask agent_md with, so the page waits on the model's own call.
+    await $.tool.call({ tool: own('claim_card'), projectId: PROJECT, id: 'GN-7', note: 'x' })
+    await $.command.run(WITNESS())
+    await seen.clock.settle()
+    const ui = await $.ui.mount({ plugin: 'witness', surface: 'terminal', component: 'Pane', requestId: 'witness', props: PANE() })
+    expect(await ui.findAll({ type: 'Link' })).toEqual([])
+    await $.tool.call({ tool: own('agent_md'), projectId: PROJECT })
+    await seen.clock.settle()
+    expect((await ui.findAll({ type: 'Link' })).map((l) => l.props.href)).toEqual(['https://witness.nu/r/p-test#/cards/GN-7'])
+  })
+
+  test('a host that passes the resource_link block through teaches the page too', async ($, on) => {
+    const seen = stand(on, { rawBlocks: true, page: 'https://dev.example/r/p-dev' })
+    await $.tool.call({ tool: 'mcp__witness-dev__witness_agent_md', projectId: 'p-dev' })
+    await $.tool.call({ tool: 'mcp__witness-dev__witness_claim_card', projectId: 'p-dev', id: 'GN-7', note: 'x' })
+    await $.command.run(WITNESS())
+    await seen.clock.settle()
+    const ui = await $.ui.mount({ plugin: 'witness', surface: 'terminal', component: 'Pane', requestId: 'witness', props: PANE() })
+    expect((await ui.findAll({ type: 'Link' })).map((l) => l.props.href)).toEqual(['https://dev.example/r/p-dev#/cards/GN-7'])
+  })
+
+  test('a session that writes with a proof but never read agent_md (resumed, compacted) asks for the page once, itself', async ($, on) => {
+    const seen = stand(on, { page: 'https://dev.example/r/p-dev' })
+    await $.tool.call({ tool: 'mcp__witness-dev__witness_claim_card', ...call, projectId: 'p-dev', id: 'GN-7', note: 'x' })
+    await $.tool.call({ tool: 'mcp__witness-dev__witness_claim_card', ...call, projectId: 'p-dev', id: 'GN-8', note: 'x' })
+    await $.command.run(WITNESS())
+    await seen.clock.settle()
+    expect(seen.pageCalls).toEqual(['witness-dev p-dev'])
+    const ui = await $.ui.mount({ plugin: 'witness', surface: 'terminal', component: 'Pane', requestId: 'witness', props: PANE() })
+    expect((await ui.findAll({ type: 'Link' })).map((l) => l.props.href)).toEqual([
+      'https://dev.example/r/p-dev#/cards/GN-7',
+      'https://dev.example/r/p-dev#/cards/GN-8',
+    ])
+  })
+
+  test('the mod\'s own agent_md failing is silent and not retried: the card draws without a link', async ($, on) => {
+    const seen = stand(on, { pageFail: true })
+    await $.tool.call({ tool: own('claim_card'), ...call, id: 'GN-7', note: 'x' })
+    await $.tool.call({ tool: own('update_card'), ...call, id: 'GN-7', version: 2, title: 'Renamed' })
+    await $.command.run(WITNESS())
+    await seen.clock.settle()
+    expect(seen.pageCalls).toEqual(['plugin_witness_witness p-test'])
+    const ui = await $.ui.mount({ plugin: 'witness', surface: 'terminal', component: 'Pane', requestId: 'witness', props: PANE() })
+    expectShown((await ui.findAll({ type: 'Text' })).map((t) => t.text), 'GN-7 Title of GN-7')
+    expect(await ui.findAll({ type: 'Link' })).toEqual([])
+  })
+
+  test('two servers that hold the same project id each link their own cards to their own page', async ($, on) => {
+    const seen = stand(on, {
+      page: (tool) => (tool.startsWith('mcp__witness-dev__') ? 'https://dev.example/r/p-same' : 'https://witness.nu/r/p-same'),
+    })
+    await $.tool.call({ tool: 'mcp__witness__witness_agent_md', projectId: 'p-same' })
+    await $.tool.call({ tool: 'mcp__witness-dev__witness_agent_md', projectId: 'p-same' })
+    await $.tool.call({ tool: 'mcp__witness__witness_claim_card', projectId: 'p-same', id: 'GN-1', note: 'x' })
+    await $.tool.call({ tool: 'mcp__witness-dev__witness_claim_card', projectId: 'p-same', id: 'GN-2', note: 'x' })
+    await $.command.run(WITNESS())
+    await seen.clock.settle()
+    const ui = await $.ui.mount({ plugin: 'witness', surface: 'terminal', component: 'Pane', requestId: 'witness', props: PANE() })
+    expect((await ui.findAll({ type: 'Link' })).map((l) => l.props.href)).toEqual([
+      'https://witness.nu/r/p-same#/cards/GN-1',
+      'https://dev.example/r/p-same#/cards/GN-2',
+    ])
   })
 
   test('not connected stands where CARDS would, whatever else is drawn', async ($, on) => {
@@ -437,6 +548,7 @@ describe('the session rail', () => {
 
   test('inline, the rows fold to the height the engine gave', async ($, on) => {
     const seen = stand(on, { noRepo: true })
+    await $.tool.call({ tool: own('agent_md'), projectId: PROJECT })
     for (const id of ['GN-1', 'GN-2', 'GN-3']) await $.tool.call({ tool: own('claim_card'), ...call, id, note: 'x' })
     await $.command.run(WITNESS())
     const inline = { ...PANE(60), placement: 'inline' as const, scroll: { offset: 0, bodyRows: 3 } }
@@ -503,9 +615,11 @@ describe('the rail, plain', () => {
     expect(parsePullRequest('no pull requests found')).toBeNull()
   })
 
-  test('the card link is the page address for the plugin’s own server only', () => {
-    expect(cardUrl({ server: 'plugin_witness_witness', projectId: 'p 1', id: 'GN-4' })).toBe('https://witness.nu/r/p%201#/cards/GN-4')
-    expect(cardUrl({ server: 'witness-dev', projectId: 'p', id: 'GN-4' })).toBeUndefined()
+  test('the card link is the page agent_md named for its server and project, and none before', () => {
+    const pages = { [pageKey('witness-dev', 'p 1')]: 'https://dev.example/r/p 1' }
+    expect(cardUrl({ server: 'witness-dev', projectId: 'p 1', id: 'GN-4' }, pages)).toBe('https://dev.example/r/p 1#/cards/GN-4')
+    expect(cardUrl({ server: 'witness-dev', projectId: 'p 1', id: 'GN-4' }, {})).toBeUndefined()
+    expect(cardUrl({ server: 'witness-dev', projectId: 'p 2', id: 'GN-4' }, pages)).toBeUndefined()
   })
 
   test('the fold: as many card rows as fit, at least one, then n more; then artifacts; a fold saving nothing is not made', () => {
@@ -516,6 +630,7 @@ describe('the rail, plain', () => {
       cards: Array.from({ length: c }, (_, i) => card(i + 1)),
       artifacts: Array.from({ length: a }, (_, i) => art(i + 1)),
       tree,
+      pages: {},
       isConnected: true,
     })
     const shape = (rows: ReturnType<typeof fitRows>) => rows.map((r) => (r.kind === 'more' ? `${r.count} more` : r.kind)).join(',')

@@ -1,8 +1,8 @@
 import { atom, read, update } from 'claude-code'
-import type { EngineInterface, Register, RenderInput } from 'claude-code'
+import type { EngineInterface, Register, RenderInput, ToolCallResult } from 'claude-code'
 
 import type { WitnessArtifact, WitnessHeldCard, WitnessProof, WitnessRailHistory, WitnessTree } from '../types'
-import { WITNESS_TOOL, isRecord, parse, payload, witnessCall, type WitnessCall } from './calls'
+import { WITNESS_TOOL, isRecord, pageLink, parse, payload, witnessCall, type WitnessCall } from './calls'
 import { cardsChange } from './cards'
 import { askedCovers, coveringCards, filePathOf, note, relativeTo } from './covers'
 import { HEADER, NOT_YET, WATCHED, doneWrite, question, refusal, type DoneItem } from './done'
@@ -18,6 +18,7 @@ import {
   inlineRows,
   parsePullRequest,
   publishedArtifact,
+  pageKey,
   touchesPullRequest,
   withArtifact,
   type RailFacts,
@@ -36,6 +37,7 @@ import {
 
 const cards = atom({ plugin: 'witness', key: 'cards' } as const, [] as WitnessHeldCard[])
 const proofs = atom({ plugin: 'witness', key: 'proofs' } as const, {} as Record<string, WitnessProof>)
+const pages = atom({ plugin: 'witness', key: 'pages' } as const, {} as Record<string, string>)
 const asked = atom({ plugin: 'witness', key: 'asked' } as const, [] as string[])
 const artifacts = atom({ plugin: 'witness', key: 'artifacts' } as const, [] as WitnessArtifact[])
 const tree = atom({ plugin: 'witness', key: 'tree' } as const, {
@@ -98,6 +100,55 @@ async function recordCall($: EngineInterface, call: WitnessCall, answer: Record<
   const after = (await update($, cards, change)).length
   if (before === 0 && after > 0) await autoOpen($)
   else await growInline($)
+  if (projectId && after > 0) await learnPage($, call.server, projectId)
+}
+
+/** Keeps a project's page address under its server. The rail reads it while drawing, so a card already held gains its link when it lands. */
+async function keepPage($: EngineInterface, server: string, projectId: string, page: string): Promise<void> {
+  const key = pageKey(server, projectId)
+  await update($, pages, (all) => (all[key] === page ? all : { ...all, [key]: page }))
+}
+
+/** The page address the model's own `agent_md` call was answered with, in whatever shape the engine hands it on. */
+async function recordPage($: EngineInterface, call: WitnessCall, ran: ToolCallResult): Promise<void> {
+  if (ran.deny !== undefined || ran.isError) return
+  const projectId = typeof call.input.projectId === 'string' ? call.input.projectId : ''
+  const page = pageLink(ran.result, projectId, ran.text)
+  if (page) await keepPage($, call.server, projectId, page)
+}
+
+/** How long a card write waits on the mod's own `agent_md` before it goes on without a link. */
+const PAGE_WAIT_MS = 2000
+
+/** Server and project pairs whose page the mod has asked for itself: once each per session. */
+const pagesAsked = new Set<string>()
+
+/**
+ * A session that writes with a proof but never called `agent_md` itself (one resumed, or
+ * past a compaction) has no page for the project: once per server and project, the mod
+ * calls `agent_md` on the server the proof was taken by, and keeps the page it names.
+ * `$.mcp.call` is seen by `mcp.call` hooks, never by this mod's `tool.call` hook, so the
+ * page is kept here rather than by `recordPage`. Silent on failure and after two seconds,
+ * as `coversNote` is.
+ */
+async function learnPage($: EngineInterface, server: string, projectId: string): Promise<void> {
+  const key = pageKey(server, projectId)
+  if (pagesAsked.has(key) || (await read($, pages))[key]) return
+  const proof = (await read($, proofs))[projectId]
+  if (!proof || proof.server !== server) return
+  pagesAsked.add(key)
+  const stop = new AbortController()
+  const timeout = $.clock.sleep(PAGE_WAIT_MS, { signal: stop.signal }).then(
+    () => undefined,
+    () => undefined,
+  )
+  const lookup = $.mcp
+    .call(server, 'witness_agent_md', { projectId })
+    .then((answer) => pageLink(answer, projectId))
+    .catch(() => undefined)
+  const page = await Promise.race([lookup, timeout])
+  stop.abort()
+  if (page) await keepPage($, server, projectId, page)
 }
 
 async function isConnected($: EngineInterface): Promise<boolean> {
@@ -114,6 +165,7 @@ async function railFacts($: EngineInterface): Promise<RailFacts> {
     cards: held,
     artifacts: await read($, artifacts),
     tree: await read($, tree),
+    pages: await read($, pages),
     isConnected: held.length > 0 || (await isConnected($)),
   }
 }
@@ -384,6 +436,7 @@ export const register: Register = (on) => {
     }
 
     const ran = await next(e)
+    if (call.op === 'agent_md') await recordPage($, call, ran).catch(() => {})
     const answer = payload(ran)
     if (answer) await recordCall($, call, answer).catch(() => {})
     return ran
