@@ -6,7 +6,7 @@
     {
       "name": "witness",
       "source": "./plugins/witness",
-      "description": "Connects witness and asks you before a Done goes in your name."
+      "description": "Connects witness, asks you before a Done goes in your name, and gives the session a rail."
     }
   ]
 }

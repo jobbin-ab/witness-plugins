@@ -1,26 +1,17 @@
 import type { WitnessHeldCard } from '../types'
 import { isRecord, type WitnessCall } from './calls'
-import { statusLabel } from './labels'
 
-/** `GN-304 Needs verification · GN-433 Investigating`; past two, the first two and `+n`. */
-export function statusLine(held: readonly WitnessHeldCard[]): string | undefined {
-  if (held.length === 0) return undefined
-  const shown = held
-    .slice(0, 2)
-    .map((c) => `${c.id} ${statusLabel(c.status)}`)
-    .join(' · ')
-  return held.length > 2 ? `${shown} +${held.length - 2}` : shown
-}
-
+/** Adds the card at the end, or updates it in place; a title it does not carry keeps the one held. */
 function upsert(list: WitnessHeldCard[], card: WitnessHeldCard): WitnessHeldCard[] {
-  return list.some((c) => c.id === card.id)
-    ? list.map((c) => (c.id === card.id ? card : c))
-    : [...list, card]
+  const held = list.find((c) => c.id === card.id)
+  if (!held) return [...list, card]
+  const merged = { ...card, title: card.title || held.title }
+  return list.map((c) => (c.id === card.id ? merged : c))
 }
 
-function cardOf(v: unknown, projectId: string): WitnessHeldCard | undefined {
+function cardOf(v: unknown, projectId: string, server: string): WitnessHeldCard | undefined {
   if (!isRecord(v) || typeof v.id !== 'string' || typeof v.status !== 'string') return undefined
-  return { id: v.id, projectId, status: v.status }
+  return { id: v.id, projectId, status: v.status, title: typeof v.title === 'string' ? v.title : '', server }
 }
 
 /**
@@ -39,14 +30,14 @@ export function cardsChange(
     case 'claim_card':
     case 'create_card':
     case 'update_card': {
-      const card = cardOf(answer.card, projectId)
+      const card = cardOf(answer.card, projectId, call.server)
       if (card) return (list) => upsert(list, card)
-      const current = cardOf(answer.current, projectId)
+      const current = cardOf(answer.current, projectId, call.server)
       if (current) return (list) => (list.some((c) => c.id === current.id) ? upsert(list, current) : list)
       return undefined
     }
     case 'release_card': {
-      const card = cardOf(answer.card, projectId)
+      const card = cardOf(answer.card, projectId, call.server)
       return card ? (list) => list.filter((c) => c.id !== card.id) : undefined
     }
     case 'update_cards': {
@@ -55,7 +46,7 @@ export function cardsChange(
       const known = landed.flatMap((l) => {
         const item = sent.find((s) => String(s.id ?? '').toUpperCase() === l.id)
         return typeof l.id === 'string' && item && typeof item.status === 'string'
-          ? [{ id: l.id, projectId, status: item.status }]
+          ? [{ id: l.id, projectId, status: item.status, title: typeof item.title === 'string' ? item.title : '', server: call.server }]
           : []
       })
       return known.length ? (list) => known.reduce(upsert, list) : undefined
