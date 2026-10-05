@@ -1,0 +1,23 @@
+name: Plugin
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  validate-and-test:
+    name: Validate and test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      # The latest Claude Code, on purpose: the mod API is early access, and a release
+      # that breaks the plugin should turn this red before it reaches anyone's session.
+      - run: npm install -g @anthropic-ai/claude-code
+      - run: claude --version
+      - run: claude plugin validate .
+      - run: claude plugin validate plugins/witness
+      - run: claude plugin test plugins/witness
