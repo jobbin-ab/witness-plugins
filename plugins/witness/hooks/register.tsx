@@ -129,7 +129,7 @@ async function railHistory($: EngineInterface): Promise<WitnessRailHistory> {
   return (await $.state.get(rail)).value ?? NO_HISTORY
 }
 
-async function changeRail($: EngineInterface, change: (h: WitnessRailHistory) => WitnessRailHistory): Promise<void> {
+async function changeRail($: EngineInterface, change: (history: WitnessRailHistory) => WitnessRailHistory): Promise<void> {
   for (let i = 0; i < TRIES; i += 1) {
     const held = await $.state.get(rail)
     if ((await $.state.set(rail, change(held.value ?? NO_HISTORY), { ifVersion: held.version })).isSet) return
@@ -292,7 +292,7 @@ async function railFacts($: EngineInterface): Promise<RailFacts> {
 async function openRail($: EngineInterface): Promise<void> {
   const rows = inlineRows(await railFacts($))
   const opened = await $.ui.open({ id: RAIL, title: RAIL, columns: RAIL_COLUMNS, rows })
-  if (opened.isPlaced) await changeRail($, (h) => ({ ...h, shown: true }))
+  if (opened.isPlaced) await changeRail($, (history) => ({ ...history, shown: true }))
   // The hint tail reads whether the rail is placed, which no state write announces.
   $.ui.invalidate('ui.render')
 }
@@ -309,7 +309,7 @@ async function autoOpen($: EngineInterface): Promise<void> {
   const where = await surfaces($)
   if (where.length === 0) return
   if (!(where.some((s) => s === 'desktop' || s === 'vscode') || fullscreen === true)) return
-  await changeRail($, (h) => ({ ...h, autoOpened: true }))
+  await changeRail($, (history) => ({ ...history, autoOpened: true }))
   await openRail($)
 }
 
@@ -549,7 +549,7 @@ export const register: Register = (on) => {
   /** A rail the person closed stays closed: nothing reopens it unasked. */
   on('ui.close', { id: 'witness' }, async ($, e, next) => {
     const closed = await next(e)
-    if (e.origin.kind === 'person') await changeRail($, (h) => ({ ...h, closedByPerson: true }))
+    if (e.origin.kind === 'person') await changeRail($, (history) => ({ ...history, closedByPerson: true }))
     $.ui.invalidate('ui.render')
     return closed
   })

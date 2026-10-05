@@ -1,6 +1,6 @@
 {
   "name": "witness",
-  "version": "0.2.2",
+  "version": "0.2.3",
   "description": "Connects witness to Claude Code: a question before a Done goes in your name, the cards that cover a file named before the agent edits it, and the session's rail (pull request, cards, artifacts, branch) in a pane.",
   "author": {
     "name": "Robin Smedberg"
