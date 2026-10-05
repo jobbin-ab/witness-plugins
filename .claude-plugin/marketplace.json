@@ -1,0 +1,12 @@
+{
+  "name": "witness",
+  "owner": { "name": "Robin Smedberg" },
+  "metadata": { "description": "Claude Code plugins for witness, the shared project of findings." },
+  "plugins": [
+    {
+      "name": "witness",
+      "source": "./plugins/witness",
+      "description": "Connects witness and asks you before a Done goes in your name."
+    }
+  ]
+}
